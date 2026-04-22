@@ -1,0 +1,108 @@
+AI Reviewer
+
+Project Brief: AI Reviewer (AIR)
+Objective: A serverless, multi-tenant GitHub App that uses AI to perform automated code reviews on Pull Requests. The app demonstrates senior-level architectural patterns including event-driven processing and granular RBAC.
+
+Tech Stack:
+
+Framework: Next.js (App Router) + TypeScript
+
+Auth & Identity: Clerk (Organization-based RBAC)
+
+Database: Supabase (PostgreSQL) with Prisma ORM
+
+Async Processing: Inngest (Background job orchestration for AI tasks)
+
+IDE/Tools: Cursor (for development)
+
+Core Architecture (Option B: GitHub App Model):
+
+Multi-Tenancy: The app is installed at the GitHub Organization level. Access is controlled via an installation_id stored in Supabase.
+
+Webhook Flow: GitHub sends pull_request events to a Next.js Route Handler. The handler validates the signature and hands off the payload to Inngest.
+
+User Roles:
+
+Superuser: Platform management and global health.
+
+Admin: Manages organization-wide repo access, user permissions, and billing.
+
+Team Lead: Configures AI strictness/rules for specific collections of repos.
+
+Developer: Views and interacts with AI feedback on PRs.
+
+Database Strategy: Prisma schema mapping Users to Organizations and Repositories with specific permission claims.
+
+Immediate Goal: Set up the GitHub App handshake using a Manifest flow, establish a local tunnel for webhooks, and initialize the Prisma schema to handle Organizations, Repositories, and UserPermissions.
+
+Suggested First Prompt for Cursor:
+Once you’ve given it the summary, you can follow up with:
+
+"Based on the AIR summary, help me initialize the project. Let's start by creating the prisma.schema file that supports the hierarchical roles (Admin, Lead, Dev) and links them to GitHub installation_id and specific repositories."
+
+This will get Cursor focused on the data model, which is the backbone of the "Option B" management we decided on!
+
+
+CURSOR ACTIONS TAKEN
+
+cd /Users/kevinworam/Projects/AIR && npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --turbopack --yes
+
+Locating and reading the AI Reviewer Notes to understand the project overview.
+
+Workspace contains only the notes file — no app yet. Initializing a Next.js (App Router) + TypeScript project and adding a Prisma schema aligned with the brief (organizations, GitHub installation, repositories, hierarchical roles).
+
+which node; which npm; command -v npx; echo $PATH
+
+source ~/.zshrc 2>/dev/null || true; source ~/.nvm/nvm.sh 2>/dev/null || true; command -v npm && cd /Users/kevinworam/Projects/AIR && npm install
+
+
+What I added to /Users/kevinworam/Projects/AIR
+Your folder only had the notes file, so this is a from-scratch Next.js + Prisma skeleton (no npm/npx in this environment, so install has to run on your machine):
+
+Piece	Purpose
+package.json
+Next 15, React 19, Prisma, Tailwind v4, ESLint
+src/app/
+App Router layout.tsx, page.tsx, globals.css
+prisma/schema.prisma
+Data model aligned with Option B + hierarchical roles
+src/lib/prisma.ts
+Singleton PrismaClient for server code
+.env.example
+Placeholders for Supabase, GitHub App, Clerk, Inngest
+Prisma model (high level)
+User — clerkUserId, optional email, isSuperuser for platform operators.
+Organization — githubInstallationId (string), optional clerkOrganizationId, name/slug.
+OrganizationMember — OrganizationRole: ADMIN | TEAM_LEAD | DEVELOPER**, unique per org + user.
+Repository — tied to org; GitHub ids, fullName, privacy, default branch.
+RepositoryScope — optional per-user repo claims; canConfigure for team leads on specific repos (admins can be treated as “all repos” in app logic).
+Supabase + Prisma commonly use a pooled DATABASE_URL and a direct DIRECT_URL for migrations; both are in .env.example.
+
+What you should run locally
+cd /Users/kevinworam/Projects/AIR
+npm install
+cp .env.example .env
+# fill DATABASE_URL / DIRECT_URL (and others when you wire them)
+npx prisma generate
+npm run dev
+Sensible next implementation steps (from your brief)
+GitHub App manifest URL + callback route to exchange code and persist githubInstallationId → Organization.
+/api/webhooks/github Route Handler: signature verification, enqueue Inngest events for pull_request.
+Clerk middleware + org sync → User / OrganizationMember.
+Tunnel (e.g. ngrok/smee) pointed at that webhook URL for local dev.
+If you want to continue in-repo, say whether you prefer manifest-first (GitHub App creation) or Clerk-first (dashboard login), and we can implement that path next.
+
+
+
+
+kevinworam@Kevins-MBP AIR % node -v
+v25.9.0
+kevinworam@Kevins-MBP AIR % npm -v
+11.12.1
+kevinworam@Kevins-MBP AIR % 
+
+
+cp .env.example .env
+pnpm exec prisma generate
+pnpm dev
+

@@ -1,0 +1,103 @@
+// AIR — AI Reviewer
+// PostgreSQL via Supabase; map Clerk users to GitHub App installations and repo-scoped RBAC.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/// Org-level role. Application rules:
+/// - ADMIN: full organization (repos, billing, member roles).
+/// - TEAM_LEAD: configures AI rules for repositories listed in RepositoryScope (canConfigure = true).
+/// - DEVELOPER: consumes AI feedback on PRs; optional RepositoryScope rows restrict visibility.
+enum OrganizationRole {
+  ADMIN
+  TEAM_LEAD
+  DEVELOPER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  clerkUserId  String   @unique
+  email        String?
+  /// Platform operators; bypasses org checks where implemented in app code.
+  isSuperuser  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships OrganizationMember[]
+  repoScopes  RepositoryScope[]
+}
+
+/// One row per GitHub App installation (org-level install for Option B).
+model Organization {
+  id                   String   @id @default(cuid())
+  /// GitHub `installation.id` as string to avoid JSON/Javascript precision issues.
+  githubInstallationId String   @unique
+  name                 String
+  slug                 String?
+  /// When the org links Clerk for dashboard login / RBAC.
+  clerkOrganizationId String?  @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  members      OrganizationMember[]
+  repositories Repository[]
+}
+
+model OrganizationMember {
+  id             String            @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrganizationRole
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Repository {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// Stable GitHub repository node id (recommended) or numeric id as string.
+  githubRepoId   String   @unique
+  owner          String
+  name           String
+  fullName       String
+  isPrivate      Boolean  @default(false)
+  defaultBranch  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scopes       RepositoryScope[]
+
+  @@unique([organizationId, fullName])
+  @@index([organizationId])
+}
+
+/// Optional per-repo claims beyond org role (team lead coverage, developer visibility).
+model RepositoryScope {
+  id             String   @id @default(cuid())
+  repositoryId   String
+  userId         String
+  /// TEAM_LEAD uses this to mark repos they configure; app treats ADMIN as implicit full access.
+  canConfigure   Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, userId])
+  @@index([userId])
+}
