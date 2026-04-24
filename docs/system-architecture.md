@@ -41,8 +41,8 @@ flowchart LR
 
   GH -->|signed webhooks| WH
   WH -->|request AI review| Inngest
-  Inngest --> DB
-  DB --> Inngest
+  Inngest -->|record status + usage| DB
+  DB -->|load AI policy + config| Inngest
   Inngest -->|request PR review| OAI
   Inngest -->|request PR review| ANT
   Inngest -->|post AI review| GH
@@ -51,7 +51,7 @@ flowchart LR
   CW -->|mirror membership| DB
 ```
 
-**Postgres ↔ Inngest (the two plain arrows, no on-arrow text):** **Inngest → Postgres** = *record status + usage* (writes: run status, token usage, PR units, repo sync, errors, …). **Postgres → Inngest** = *load AI policy + config* (reads: org/install mapping, repo AI settings, dedupe / prior runs, …). Mermaid’s layout often drops edge labels *below* curved two-way links in previews, so those phrases live in this line instead of on the diagram.
+**Postgres ↔ Inngest:** The diagram labels those two links on github.com. Some **local** Markdown previews still draw the labels offset from the curves; if yours looks wrong, rely on the diagram notes below (same meaning).
 
 ### Diagram notes (read with the figure)
 
@@ -59,8 +59,8 @@ flowchart LR
 - **AIR user routes** are the Next.js pages and handlers meant for **people** (dashboard, settings, member flows, etc.), as opposed to the **webhook** routes that accept signed calls from GitHub or Clerk without a browser session.
 - **Server actions / API** is **not** invite-only. The edge labeled **e.g. create invite** is one **representative** server-side call into Clerk via `IdentityPort`; the same surface would also cover org/repo settings, RBAC-guarded reads/writes, metering hooks, and other mutations—the diagram omits extra arrows to stay readable.
 - **GitHub webhook → Inngest (`request AI review`)** names the **product intent** of the main spine: after a verified `pull_request` (and similar) webhook, AIR should **enqueue durable work** so workers can assemble context, call the AI provider, and post review feedback back to GitHub. Transport-wise that is still an **emitted domain event / job** (for example the roadmap’s `air/github.pull_request.enqueued`), not a literal synchronous “request” to Inngest’s UI.
-- **Postgres → Inngest (*load AI policy + config*)** — Same meaning as the **legend line** above the diagram notes: reads from Postgres to support the job—resolve **`Organization`** from `installation_id`; load **`Repository`** / AI policy (strictness, path excludes, enabled flag); read **dedupe / prior run** rows by delivery or PR identity; optionally load **`OrganizationMember`** for attribution. The diagram shows one unlabeled arrow for all read patterns.
-- **Inngest → Postgres (*record status + usage*)** — Same meaning as the legend line: writes and durable updates—**`ReviewRun`** (or equivalent) status transitions; append **internal token-usage** per model call; append **PR-unit billing** events on completion; upsert **repo metadata** from GitHub; store **errors / correlation ids** for the dashboard. The diagram shows one unlabeled arrow. (Exact table names evolve with Prisma—this is the intent.)
+- **Postgres → Inngest (`load AI policy + config`)** — Reads from Postgres to support the job—resolve **`Organization`** from `installation_id`; load **`Repository`** / AI policy (strictness, path excludes, enabled flag); read **dedupe / prior run** rows by delivery or PR identity; optionally load **`OrganizationMember`** for attribution. The diagram labels this on the **Postgres → Inngest** arrow (declared second so it tends not to overlap the write label in Mermaid).
+- **Inngest → Postgres (`record status + usage`)** — Writes and durable updates—**`ReviewRun`** (or equivalent) status transitions; append **internal token-usage** per model call; append **PR-unit billing** events on completion; upsert **repo metadata** from GitHub; store **errors / correlation ids** for the dashboard. The diagram labels this on the **Inngest → Postgres** arrow. (Exact table names evolve with Prisma—this is the intent.)
 - **Inngest → AI providers (`request PR review`)** — AIR may support **multiple model vendors** (the diagram shows **OpenAI** and **Anthropic** as examples—others plug in via `AiReviewPort`). The label means **your worker calls the vendor HTTP API** (e.g. chat-completions): **system** message = reviewer rules; **user** message = PR bundle (title, description, files, diff hunks or summaries); optional **follow-up** calls for a shorter summary or **JSON-shaped** findings before posting to GitHub; each call returns **text + token counts** for the usage ledgers above.
 
 ## Key domain concepts
