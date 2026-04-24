@@ -47,6 +47,7 @@ isProject: false
 
 ## Sources of truth
 
+- **Architecture (non-functional rules, DPA-oriented data flow, domain events):** [system-architecture.md](system-architecture.md) — canonical detail; this roadmap **references** it in phases (for example Phase 3 event payloads, Phase 5 context assembly) without duplicating full policy text.
 - **Product / architecture intent:** [AI Reviewer Notes](AI%20Reviewer%20Notes) — multi-tenant GitHub App (org-level install, Option B), Clerk org RBAC, Supabase Postgres + Prisma, Inngest for async AI work, webhook-driven `pull_request` flow.
 - **Current code:** Next.js App Router app, [prisma/schema.prisma](prisma/schema.prisma), [src/lib/prisma.ts](src/lib/prisma.ts), placeholder [src/app/page.tsx](src/app/page.tsx), and **started but unwired** boundaries: [src/lib/identity/](src/lib/identity/) (`IdentityPort` + `ClerkIdentityAdapter` + [src/lib/identity/server.ts](src/lib/identity/server.ts)), [src/lib/jobs/](src/lib/jobs/) (`JobsPort` + `InngestJobsAdapter` + [src/lib/jobs/domain-events.ts](src/lib/jobs/domain-events.ts) including `air/github.pull_request.enqueued`).
 
@@ -137,7 +138,7 @@ flowchart LR
 **Goal:** Signed `pull_request` webhooks enqueue durable work via [JobsPort](src/lib/jobs/jobs-port.ts).
 
 - Add `POST` handler e.g. [src/app/api/webhooks/github/route.ts](src/app/api/webhooks/github/route.ts): verify `X-Hub-Signature-256` with `GITHUB_WEBHOOK_SECRET`; parse payload; **idempotency** using `X-GitHub-Delivery` as `AirDomainEvent` `id` when emitting `air/github.pull_request.enqueued` (aligns with [domain-events.ts](src/lib/jobs/domain-events.ts)).
-- Extend payload type in `AirDomainEventPayload` as needed (at minimum: installation id, repo full name, PR number, action).
+- Extend payload type in `AirDomainEventPayload` as needed (at minimum: installation id, repo full name, PR number, action, and **`X-GitHub-Delivery`** / delivery id for correlation). **Do not** put full diffs or file contents in the event body—workers fetch code from GitHub **in memory** and Postgres stores **minimal** durable state; rationale in [system-architecture.md](system-architecture.md) § *Customer data: webhooks, Postgres, Inngest (DPA-oriented)*.
 - **Inngest serve route** (App Router): `GET/POST/PUT` handler per Inngest Next.js docs, exporting `inngest` client + **functions** array.
 - First function: handler for `air/github.pull_request.enqueued` that logs, validates installation belongs to a known `Organization`, and optionally **syncs** [Repository](prisma/schema.prisma) metadata from GitHub API (still no AI).
 - Optional: `air/test.ping` function for smoke tests.
@@ -166,6 +167,7 @@ flowchart LR
 
 **Goal:** On eligible PR events, generate review text and post back to GitHub.
 
+- **Data minimization:** keep **domain event payloads** identifier-first and load bulk PR context from the **GitHub API inside workers** (same rule as Phase 3); do **not** widen Inngest payloads to carry full diffs when adding AI—see [system-architecture.md](system-architecture.md) § *Customer data: webhooks, Postgres, Inngest (DPA-oriented)* (including the **Agreed implementation default** bullet there).
 - **Trigger policy:** which `pull_request` actions (opened, synchronize, ready_for_review, reopened) and ignore drafts/bots if desired—configurable per org/repo later; start with a conservative default.
 - **Context assembly job:** fetch files/diff via GitHub APIs (respect rate limits; chunk large PRs); respect org/repo **opt-in** flags (new columns on `Repository` or a `RepoAiSettings` model: strictness, max files, excluded paths).
 - **AI providers:** support **more than one** vendor over time (diagram examples: OpenAI, Anthropic); each integration sits behind **`AiReviewPort`** with env/config per provider (same pattern as identity/jobs) so models and prompts stay swappable.
