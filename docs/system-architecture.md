@@ -17,6 +17,7 @@ flowchart LR
     AIRRoutes[AIR user routes]
     WH["AIR — GitHub webhook"]
     CW["AIR — Clerk webhook"]
+    INH["AIR — Inngest serve"]
     API[Server actions / API]
   end
 
@@ -40,28 +41,31 @@ flowchart LR
   API -->|e.g. create invite| Clerk
 
   GH -->|signed webhooks| WH
-  WH -->|request AI review| Inngest
-  Inngest -->|record status + usage| DB
-  DB -->|load AI policy + config| Inngest
-  Inngest -->|request PR review| OAI
-  Inngest -->|request PR review| ANT
-  Inngest -->|post AI review| GH
+  WH -->|emit domain event| Inngest
+  Inngest -->|invoke handler| INH
+  DB -->|load AI policy + config| INH
+  INH -->|record status + usage| DB
+  INH -->|request PR review| OAI
+  INH -->|request PR review| ANT
+  INH -->|post AI review| GH
 
   Clerk -->|webhooks| CW
   CW -->|mirror membership| DB
 ```
 
-**Postgres ↔ Inngest:** The diagram labels those two links on github.com. Some **local** Markdown previews still draw the labels offset from the curves; if yours looks wrong, rely on the diagram notes below (same meaning).
+**Postgres ↔ AIR — Inngest serve:** The diagram labels those two links on github.com. Some **local** Markdown previews still draw the labels offset from the curves; if yours looks wrong, rely on the diagram notes below (same meaning). **Inngest** (hosted) does **not** call AI providers directly; **INH** is your registered function code on the serve route.
 
 ### Diagram notes (read with the figure)
 
 - **AIR user** means any human using the AIR product in a **signed-in session**, regardless of AIR role (**SuperUser**, **Customer Admin**, **Team Lead**, **Developer**). That is separate from **GitHub**, which is the other “client” (the platform calling your webhook and receiving review posts).
-- **AIR user routes** are the Next.js pages and handlers meant for **people** (dashboard, settings, member flows, etc.), as opposed to the **webhook** routes that accept signed calls from GitHub or Clerk without a browser session. In the figure, **WH** is **AIR — GitHub webhook** and **CW** is **AIR — Clerk webhook** (same names as in the sequence diagrams below).
+- **AIR user routes** are the Next.js pages and handlers meant for **people** (dashboard, settings, member flows, etc.), as opposed to the **webhook** routes that accept signed calls from GitHub or Clerk without a browser session. In the figure, **WH** is **AIR — GitHub webhook**, **CW** is **AIR — Clerk webhook**, and **INH** is **AIR — Inngest serve** (the App Router route where Inngest invokes your functions—same concept as **AIR — Inngest function** in the sequence diagram below).
 - **Server actions / API** is **not** invite-only. The edge labeled **e.g. create invite** is one **representative** server-side call into Clerk via `IdentityPort`; the same surface would also cover org/repo settings, RBAC-guarded reads/writes, metering hooks, and other mutations—the diagram omits extra arrows to stay readable.
-- **GitHub webhook → Inngest (`request AI review`)** names the **product intent** of the main spine: after a verified `pull_request` (and similar) webhook, AIR should **enqueue durable work** so workers can assemble context, call the AI provider, and post review feedback back to GitHub. Transport-wise that is still an **emitted domain event / job** (for example the roadmap’s `air/github.pull_request.enqueued`), not a literal synchronous “request” to Inngest’s UI.
-- **Postgres → Inngest (`load AI policy + config`)** — Reads from Postgres to support the job—resolve **`Organization`** from `installation_id`; load **`Repository`** / AI policy (strictness, path excludes, enabled flag); read **dedupe / prior run** rows by delivery or PR identity; optionally load **`OrganizationMember`** for attribution. The diagram labels this on the **Postgres → Inngest** arrow (declared second so it tends not to overlap the write label in Mermaid).
-- **Inngest → Postgres (`record status + usage`)** — Writes and durable updates—**`ReviewRun`** (or equivalent) status transitions; append **internal token-usage** per model call; append **PR-unit billing** events on completion; upsert **repo metadata** from GitHub; store **errors / correlation ids** for the dashboard. The diagram labels this on the **Inngest → Postgres** arrow. (Exact table names evolve with Prisma—this is the intent.)
-- **Inngest → AI providers (`request PR review`)** — AIR may support **multiple model vendors** (the diagram shows **OpenAI** and **Anthropic** as examples—others plug in via `AiReviewPort`). The label means **your worker calls the vendor HTTP API** (e.g. chat-completions): **system** message = reviewer rules; **user** message = PR bundle (title, description, files, diff hunks or summaries); optional **follow-up** calls for a shorter summary or **JSON-shaped** findings before posting to GitHub; each call returns **text + token counts** for the usage ledgers above.
+- **GitHub webhook → Inngest (`emit domain event`)** — After a verified `pull_request` (and similar) webhook, **WH** emits a **domain event** to **Inngest** (for example `air/github.pull_request.enqueued` via `JobsPort`). That step is **enqueue only**, not AI work.
+- **Inngest → AIR — Inngest serve (`invoke handler`)** — Inngest’s cloud **calls back** into your Next.js app on **INH** to run the registered function (HTTPS, signing key verified)—this is the same **invoke** leg described under the GitHub PR sequence diagram.
+- **Postgres → INH (`load AI policy + config`)** — While the function runs, **INH** reads Postgres—resolve **`Organization`** from `installation_id`; load **`Repository`** / AI policy (strictness, path excludes, enabled flag); read **dedupe / prior run** rows by delivery or PR identity; optionally load **`OrganizationMember`** for attribution.
+- **INH → Postgres (`record status + usage`)** — Writes and durable updates from your handler—**`ReviewRun`** (or equivalent) status transitions; append **internal token-usage** per model call; append **PR-unit billing** events on completion; upsert **repo metadata** from GitHub; store **errors / correlation ids** for the dashboard. (Exact table names evolve with Prisma—this is the intent.)
+- **INH → AI providers (`request PR review`)** — **AIR’s Inngest function** (on **INH**) calls vendor HTTP APIs (the diagram shows **OpenAI** and **Anthropic** as examples—others plug in via `AiReviewPort`): **system** message = reviewer rules; **user** message = PR bundle (title, description, files, diff hunks or summaries); optional **follow-up** calls for a shorter summary or **JSON-shaped** findings; each call returns **text + token counts** for the usage ledgers above. **Inngest** itself does not originate these HTTPS calls to model vendors.
+- **INH → GitHub (`post AI review`)** — The same function uses installation auth to **post** review feedback to GitHub.
 
 ## Key domain concepts
 
@@ -126,20 +130,22 @@ sequenceDiagram
   participant GH as GitHub
   participant AIR as "AIR — GitHub webhook"
   participant ING as Inngest
-  participant W as Worker
+  participant FN as "AIR — Inngest function"
   participant AI as AI_provider
 
   GH->>AIR: pull_request_webhook(signed)
   AIR->>ING: emit_air_github_pull_request_enqueued(idempotent)
-  ING->>W: run_job
-  W->>GH: fetch_PR_context(installationAuth, repoFullName, prNumber, ...)
-  W->>AI: generate_review
-  W->>W: record_token_usage_internal
-  W->>W: record_pr_units_for_billing
-  W->>GH: post_review_comment
+  ING->>FN: invoke registered handler
+  FN->>GH: fetch_PR_context(installationAuth, repoFullName, prNumber, ...)
+  FN->>AI: generate_review
+  FN->>FN: record_token_usage_internal
+  FN->>FN: record_pr_units_for_billing
+  FN->>GH: post_review_comment
 ```
 
-The **`fetch_PR_context(...)`** arrow is intentionally **short**: the worker calls GitHub’s APIs with **installation auth** plus **PR identity** (`repoFullName`, `prNumber`) and whatever else the implementation needs (base/head SHAs, pagination, file list, diff options, rate-limit state, etc.)—not a single-parameter function in real code.
+**Who runs the “worker”?** **AIR** owns the code behind **AIR — Inngest function**: it is your **registered Inngest function** (same repo as the Next.js app), not a separate product operated by Inngest. **Inngest** (the hosted service) stores the event, schedules execution and retries, and **calls back into AIR** over **HTTPS** to the **Inngest serve route** (for example the App Router handler that exports `inngest` + `functions` per Inngest’s Next.js docs—often `GET`/`POST`/`PUT` on a path like `/api/inngest`). That callback is sometimes described informally as a “webhook,” but it is **Inngest → AIR** (authenticated with Inngest’s signing key), distinct from **GitHub → AIR** on the GitHub webhook route. The high-level overview diagram omits this return leg to keep the figure readable; only **GitHub** and **Inngest** appear as external services.
+
+The **`fetch_PR_context(...)`** arrow is intentionally **short**: the function calls GitHub’s APIs with **installation auth** plus **PR identity** (`repoFullName`, `prNumber`) and whatever else the implementation needs (base/head SHAs, pagination, file list, diff options, rate-limit state, etc.)—not a single-parameter function in real code.
 
 ## Port-and-adapter boundaries (for provider swaps)
 
