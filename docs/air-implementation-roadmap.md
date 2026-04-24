@@ -8,7 +8,7 @@ todos:
 content: Standardize package manager, document env/setup (README or extend AI Reviewer Notes), verify Prisma migrate path against Supabase URLs
 status: pending
 - id: phase-1-clerk
-content: Wire ClerkProvider, middleware with IdentityPort handshake handling, Clerk webhook → Prisma user/org sync, minimal protected dashboard
+content: Wire ClerkProvider, middleware with IdentityPort handshake handling, Clerk webhook → Prisma user/org sync, minimal protected dashboard; support multiple Customer Admins per org and model invite vs active membership for later admin directory
 status: pending
 - id: phase-2-github-app
 content: GitHub App manifest + callback; persist Organization.githubInstallationId; define Clerk↔GitHub org linking model; local webhook tunnel docs
@@ -17,13 +17,13 @@ status: pending
 content: Signed GitHub webhook route; emit air/github.pull_request.enqueued with idempotency; Inngest serve route + handler; optional repo sync from GitHub API
 status: pending
 - id: phase-4-rbac
-content: Central authorization from OrganizationRole + RepositoryScope; guard dashboard/server actions; document superuser vs org roles
+content: Central authorization from OrganizationRole + RepositoryScope; guard dashboard/server actions; document superuser vs org roles; treat CustomerAdmin as a repeatable role (multiple per org)
 status: pending
 - id: phase-5-ai
 content: AiReviewPort + provider; PR context assembly; post review to GitHub; failure/retry policy and minimal repo-level AI settings in schema
 status: pending
 - id: phase-6-dashboard
-content: Org/repo settings UI, PR/review history surfacing, member/role management aligned with Clerk
+content: Org/repo settings UI, PR/review history surfacing, Customer Admin member directory (all org users + invited/active/inactive-style status) and role management aligned with Clerk
 status: pending
 - id: phase-7-hardening
 content: Tests for webhooks/RBAC, CI pipeline, observability and security review (tokens, permissions, logging)
@@ -41,7 +41,9 @@ isProject: false
 - **Membership onboarding**: **invite-only**; employees join via a **dedicated invite link**.
 - **Membership system of record**: **Clerk Organizations**; AIR mirrors into its DB for authorization, billing, and audit.
 - **Roles/privileges**: AIR defines a **fixed** role list and privilege matrix (SuperUser, CustomerAdmin, TeamLead, Developer). Customers cannot define roles.
-- **Metering**: token usage is the primary quota/billing metric (not PR count).
+- **Multiple Customer Admins**: A single customer organization may have **more than one** user with the **CustomerAdmin** AIR role (no single “owner admin” assumption in product or schema).
+- **Org user directory (Customer Admin)**: Customer Admins need a **members** view that lists **every person** in the org (invited and joined) with a clear **status** (for example: invited, active, inactive—exact labels mapped from Clerk invitation + membership lifecycle during implementation) and their **AIR role**.
+- **Metering**: customer-facing quotas/billing use **weighted PR units**; AIR also tracks **token usage internally** for cost and PR sizing.
 
 ## Sources of truth
 
@@ -102,6 +104,7 @@ flowchart LR
 **Goal:** Clerk-backed auth + Clerk Organizations membership with invite-only onboarding, mirrored into AIR DB, while keeping AIR’s role/privilege model fixed and enforced by AIR.
 
 - **Server-only Clerk admin API use**: customer admins never see Clerk; AIR server calls Clerk APIs.
+- **Multiple Customer Admins**: any **CustomerAdmin** in the org may invite and manage members (subject to the same RBAC rules); do not assume a sole admin when designing flows or UI.
 - Implement **invite-only onboarding**:
   - AIR UI for Customer Admin to invite an employee by email and assign AIR role.
   - AIR server creates a Clerk organization invitation (redirect back to AIR).
@@ -149,7 +152,7 @@ flowchart LR
 
 - Central **authorization module** (pure functions + small DB queries): given `userId`, `organizationId`, optional `repositoryId`, return allowed actions (e.g. `configure_ai_rules`, `view_feedback`, `manage_members`, `billing`).
 - Rules from notes:
-  - **ADMIN:** implicit access to all repos in org; can manage members and roles.
+  - **ADMIN (CustomerAdmin):** there may be **many** per org; each has implicit access to all repos in org and may manage members and roles (same capability set unless you later split “billing admin” vs “IT admin”).
   - **TEAM_LEAD:** `RepositoryScope.canConfigure` for repos they configure; may view/configure only scoped repos unless you grant org-wide read.
   - **DEVELOPER:** visibility/interaction limited by `RepositoryScope` when present; clarify “optional scopes” vs “all repos if no rows.”
   - **isSuperuser:** platform operations only—guard with explicit checks on admin routes.
@@ -165,13 +168,51 @@ flowchart LR
 
 - **Trigger policy:** which `pull_request` actions (opened, synchronize, ready_for_review, reopened) and ignore drafts/bots if desired—configurable per org/repo later; start with a conservative default.
 - **Context assembly job:** fetch files/diff via GitHub APIs (respect rate limits; chunk large PRs); respect org/repo **opt-in** flags (new columns on `Repository` or a `RepoAiSettings` model: strictness, max files, excluded paths).
-- **AI provider:** not fixed in repo yet—choose one (OpenAI, Anthropic, etc.), add env vars, and wrap behind an `AiReviewPort` (same pattern as identity/jobs) so the model and prompts are swappable.
-- **Token metering (first-class):** every AI call records token usage with enough metadata to attribute cost to org/user/repo/run:
+- **AI providers:** support **more than one** vendor over time (diagram examples: OpenAI, Anthropic); each integration sits behind **`AiReviewPort`** with env/config per provider (same pattern as identity/jobs) so models and prompts stay swappable.
+- **Internal token metering (first-class):** every AI call records token usage with enough metadata to attribute cost to org/user/repo/run:
   - `provider`, `model`, `inputTokens`, `outputTokens`, `totalTokens`
   - `organizationId`, `userId`, `repositoryId`, PR identifiers, and job/run correlation id
   - optional `costUsd` (derived from model pricing) for dashboards later
+- **Billing usage (first-class):** every completed PR review records customer-facing PR units with enough metadata for quotas/invoicing:
+  - `organizationId`, `repositoryId`, PR identifiers, and job/run correlation id
+  - `units`, `pricingVersion`, and the sizing input used (e.g. `sizeBucket`)
 - **Output:** GitHub review comments or a single review body—define UX (inline vs summary) in a short spec; implement minimal viable **summary review** first, then iterate to inline comments if needed.
 - **Failure handling:** Inngest retries, dead-letter behavior, and user-visible error state (optional table or Inngest run URL in dashboard).
+
+### Worker ↔ Postgres (concrete reads and writes)
+
+High-level arrows on [system architecture](system-architecture.md) compress a lot of Prisma work into **“load customer AI policy/config”** (reads) and **“record status and usage”** (writes). Implementation should plan for at least the following:
+
+**Reads (examples):**
+
+- Resolve **`Organization`** (and GitHub installation mapping) from webhook payload identifiers such as `installation_id`.
+- Load **`Repository`** and **AI policy / config** (enabled flag, strictness, max files/chunking, excluded paths) needed to decide whether and how to review.
+- Read **idempotency / dedupe** state keyed by **`X-GitHub-Delivery`**, PR identity, or a derived run key so Inngest retries do not double-post or double-bill.
+- Optionally read **`OrganizationMember`** (or mirrored role data) when attributing a run to a user or enforcing org-level flags.
+- Read any **quota / limit** rows needed before spending tokens or PR units (if you enforce limits in the worker).
+
+**Writes (examples):**
+
+- Insert or update a **`ReviewRun`** (or equivalent) through status transitions: `queued` → `running` → `succeeded` / `failed`, with timestamps and correlation ids.
+- Append **internal AI cost / token usage** rows per provider call (`provider`, `model`, input/output tokens, `organizationId`, repo/PR identifiers, job/run id); optional derived **`costUsd`** later.
+- Append **customer-facing PR-unit billing** events on successful review completion (`units`, `pricingVersion`, sizing inputs such as `sizeBucket`).
+- Upsert **`Repository`** metadata synced from GitHub when the job refreshes repo state.
+- Persist **structured errors** (and optionally Inngest run URLs) for dashboard visibility when jobs fail.
+
+Exact table names follow Prisma models; treat the list as a **checklist**, not a frozen schema.
+
+### Worker ↔ AI providers (what “request PR review” means)
+
+“Inngest calls the AI provider” means **your Inngest function invokes vendor HTTP APIs** (never a human). Typical **requests** include:
+
+- A **chat-completions**-style call where the **system** message encodes reviewer behavior (security vs style, verbosity, “no bikeshedding,” org/repo rules).
+- A **user** message that carries a **structured PR context bundle**: title, description, base/head refs, changed-file list, diff hunks or **summarized** chunks for oversized PRs, optional hints (e.g. `CODEOWNERS`, risk labels).
+- A **second** (or follow-up) call when needed: e.g. compress to an **executive summary**, or emit **JSON** with severities / file paths / line ranges to map cleanly into GitHub review comments.
+- Each successful call yields **assistant text** plus **token usage** that must be fed into the Postgres write path above for **COGS** and **PR-unit sizing** inputs.
+
+### Worker ↔ GitHub (unchanged scope, for alignment)
+
+Workers continue to use installation auth to **fetch PR context** and to **post** review comments or summaries—kept on the roadmap’s Phase 5 output and failure-handling bullets.
 
 **Exit criteria:** Demo PR receives an AI-generated review comment on a private test repo with correct installation auth.
 
@@ -181,7 +222,7 @@ flowchart LR
 
 - **Org home:** installation status, linked Clerk org, repo list with enable/disable AI and “strictness” for team leads/admins.
 - **PR activity:** list recent Inngest runs / review outcomes (data from new tables or denormalized summaries—add `PullRequestReview` or `ReviewRun` model when you outgrow logs-only).
-- **Member management:** invite/remove, role changes (Clerk vs DB source of truth—prefer Clerk for membership if using Clerk Organizations, and mirror roles into `OrganizationMember` for app-specific TEAM_LEAD/DEV semantics).
+- **Member management (Customer Admin requirement):** a **directory** of all people in the org: show **AIR role**, identity basics (email/name as available), and a **status** column suitable for operations (for example **invited** for pending Clerk org invitations, **active** for accepted members, **inactive** for removed/suspended—finalize enum vs Clerk states during build). Support **invite/remove** and **role changes** (Clerk vs DB source of truth—prefer Clerk for membership if using Clerk Organizations, and mirror roles into `OrganizationMember` for app-specific TEAM_LEAD/DEV semantics).
 
 **Exit criteria:** Non-developer stakeholders can complete install + configure without touching the database.
 
@@ -201,10 +242,13 @@ flowchart LR
 The current Prisma models are a strong backbone but the brief implies features you will likely add:
 
 - **Billing** (Admin): no tables yet—defer or add `OrganizationBilling` stub if scope includes Stripe.
-- **Usage metering**: add a usage ledger/event table for token accounting and quota enforcement.
+- **Usage metering**:
+  - customer-facing **BillingUsageEvent** (PR units)
+  - internal **AiCostEvent** (tokens)
 - **AI rules / strictness:** either columns on `Repository` or normalized `AiPolicy` / `RepoAiSettings`.
 - **PR / review history:** optional `ReviewRun` for dashboard and deduplication beyond GitHub delivery id.
 - **GitHub ↔ Clerk org linking:** explicit nullable fields or join table to avoid ambiguous duplicates.
+- **Member lifecycle for admin UI:** if Clerk webhooks alone are insufficient for “invited” rows, add a persisted invitation record or poll/list Clerk org invitations via `IdentityPort` so the Customer Admin directory stays accurate.
 
 ---
 
