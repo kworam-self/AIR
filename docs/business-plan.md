@@ -26,6 +26,11 @@ AIR is a multi-tenant GitHub App that generates AI-powered reviews for pull requ
   - **Free trial**: limited by a PR-unit quota.
   - **Paid usage**: based on PR units (exact pricing can be added later).
 
+## AI provider subscription and credentials (MVP)
+
+- **Customer-provided AI provider credentials (AIPC):** each customer company brings their own AI provider account/subscription and configures credentials in AIR so AIR can call the provider **on the customer’s behalf**.
+- **Security posture (high-level):** AIPC are treated as **secrets**: stored encrypted (managed keys), role-gated to **Customer Admin**, never logged, and rotatable. AIR should support a “test connection” flow and clear UI for key rotation. (Implementation details live in [system architecture](system-architecture.md) and the [implementation roadmap](air-implementation-roadmap.md).)
+
 ### What is a PR unit?
 
 A PR unit is AIR’s measure of the “middleman work” required to review a PR (ingestion, orchestration, context collection, AI review generation, posting results, retries, and dashboarding).
@@ -71,3 +76,4 @@ Customers cannot define their own roles/privileges. AIR provides exactly:
 - Installable GitHub App with a working webhook → async processing pipeline.
 - Invite-only membership, role-gated configuration UI, and visible usage accounting in PR units (with internal token accounting for cost).
 - Clear architecture boundaries (`IdentityPort`, `JobsPort`, and metering abstraction) that demonstrate provider-independence.
+
