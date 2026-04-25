@@ -1,34 +1,19 @@
----
+# AIR implementation roadmap
 
-name: AIR implementation roadmap
-overview: A phased plan to build AI Reviewer (AIR) from the current Next.js + Prisma skeleton and identity/jobs ports toward a production-shaped multi-tenant GitHub App with Clerk RBAC, Inngest-backed PR processing, and AI-generated review feedback—grounded in [AI Reviewer Notes](AI%20Reviewer%20Notes) and the code already in the repo.
-todos:
+## Overview
 
-- id: phase-0-hygiene
-content: Standardize package manager, document env/setup (README or extend AI Reviewer Notes), verify Prisma migrate path against Supabase URLs
-status: pending
-- id: phase-1-clerk
-content: Wire ClerkProvider, middleware with IdentityPort handshake handling, Clerk webhook → Prisma user/org sync, minimal protected dashboard; support multiple Customer Admins per org and model invite vs active membership for later admin directory
-status: pending
-- id: phase-2-github-app
-content: GitHub App manifest + callback; persist Organization.githubInstallationId; define Clerk↔GitHub org linking model; local webhook tunnel docs
-status: pending
-- id: phase-3-webhooks-inngest
-content: Signed GitHub webhook route; emit air/github.pull_request.enqueued with idempotency; Inngest serve route + handler; optional repo sync from GitHub API
-status: pending
-- id: phase-4-rbac
-content: Central authorization from OrganizationRole + RepositoryScope; guard dashboard/server actions; document superuser vs org roles; treat CustomerAdmin as a repeatable role (multiple per org)
-status: pending
-- id: phase-5-ai
-content: AiReviewPort + provider; PR context assembly; post review to GitHub; failure/retry policy and minimal repo-level AI settings in schema
-status: pending
-- id: phase-6-dashboard
-content: Org/repo settings UI, PR/review history surfacing, Customer Admin member directory (all org users + invited/active/inactive-style status) and role management aligned with Clerk
-status: pending
-- id: phase-7-hardening
-content: Tests for webhooks/RBAC, CI pipeline, observability and security review (tokens, permissions, logging)
-status: pending
-isProject: false
+A phased plan to build AI Reviewer (AIR) from the current Next.js + Prisma skeleton and identity/jobs ports toward a production-shaped multi-tenant GitHub App with Clerk RBAC, Inngest-backed PR processing, and AI-generated review feedback—grounded in [AI Reviewer Notes](AI%20Reviewer%20Notes) and the code already in the repo.
+
+## Roadmap phases (high-level)
+
+- **phase-0-hygiene** (pending): Standardize package manager, document env/setup (README or extend AI Reviewer Notes), verify Prisma migrate path against Supabase URLs
+- **phase-1-clerk** (pending): Wire ClerkProvider, middleware with IdentityPort handshake handling, Clerk webhook → Prisma user/org sync, minimal protected dashboard; support multiple Customer Admins per org and model invite vs active membership for later admin directory
+- **phase-2-github-app** (pending): GitHub App manifest + callback; persist Organization.githubInstallationId; define Clerk↔GitHub org linking model; local webhook tunnel docs
+- **phase-3-webhooks-inngest** (pending): Signed GitHub webhook route; emit air/github.pull_request.enqueued with idempotency; Inngest serve route + handler; optional repo sync from GitHub API
+- **phase-4-rbac** (pending): Central authorization from OrganizationRole + RepositoryScope; guard dashboard/server actions; document superuser vs org roles; treat CustomerAdmin as a repeatable role (multiple per org)
+- **phase-5-ai** (pending): AiReviewPort + provider; PR context assembly; post review to GitHub; failure/retry policy and minimal repo-level AI settings in schema
+- **phase-6-dashboard** (pending): Org/repo settings UI, PR/review history surfacing, Customer Admin member directory (all org users + invited/active/inactive-style status) and role management aligned with Clerk
+- **phase-7-hardening** (pending): Tests for webhooks/RBAC, CI pipeline, observability and security review (tokens, permissions, logging)
 
 ---
 
