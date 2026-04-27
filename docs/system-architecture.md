@@ -11,10 +11,12 @@ flowchart LR
   subgraph clients [Clients]
     GH[GitHub]
     AirUser[AIR user]
+    subgraph browser [Browser]
+      UI[Dashboard UI]
+    end
   end
 
   subgraph next [Next.js app]
-    AIRRoutes[AIR user routes]
     WH["AIR — GitHub webhook"]
     CW["AIR — Clerk webhook"]
     INH["AIR — Inngest serve"]
@@ -34,9 +36,9 @@ flowchart LR
     DB[(Postgres)]
   end
 
-  AirUser --> AIRRoutes
-  AIRRoutes -->|session auth| Clerk
-  AIRRoutes --> GQL
+  AirUser --> UI
+  UI -->|session auth| Clerk
+  UI -->|GraphQL queries/mutations| GQL
   GQL --> DB
   GQL -->|e.g. create invite| Clerk
 
@@ -60,7 +62,10 @@ flowchart LR
 ### Diagram notes (read with the figure)
 
 - **AIR user** means any human using the AIR product in a **signed-in session**, regardless of AIR role (**SuperUser**, **Customer Admin**, **Team Lead**, **Developer**). That is separate from **GitHub**, which is the other “client” (the platform calling your webhook and receiving review posts).
-- **AIR user routes** are the Next.js pages and handlers meant for **people** (dashboard, settings, member flows, etc.), as opposed to the **webhook** routes that accept signed calls from GitHub or Clerk without a browser session. In the figure, **WH** is **AIR — GitHub webhook**, **CW** is **AIR — Clerk webhook**, **INH** is **AIR — Inngest serve** (the App Router route where Inngest invokes your functions—same concept as **AIR — Inngest function** in the sequence diagram below), and **GQL** is **AIR — GraphQL API (/api/graphql)**.\n+- **AIR — GraphQL API (/api/graphql)** is the browser-facing API for all dashboard **reads** (queries) and **writes** (mutations). The edge labeled **e.g. create invite** is one representative GraphQL mutation that calls into Clerk via `IdentityPort`; the same surface would cover org/repo settings, RBAC-guarded reads/writes, metering reads, and other dashboard mutations.\n+- **Webhooks and Inngest serve are not GraphQL:** GitHub/Clerk webhooks and the Inngest serve route are purpose-built integration endpoints with signature verification and idempotency. They do **not** accept GraphQL documents; they emit domain events / invoke handlers that then perform work.
+- **Dashboard UI (browser)** is the client-side surface the AIR user interacts with; it calls **GQL** directly over HTTPS for dashboard reads/writes.
+- **Next.js app** contains the server endpoints: **WH** is **AIR — GitHub webhook**, **CW** is **AIR — Clerk webhook**, **INH** is **AIR — Inngest serve** (the App Router route where Inngest invokes your functions—same concept as **AIR — Inngest function** in the sequence diagram below), and **GQL** is **AIR — GraphQL API (/api/graphql)**.
+- **Webhooks and Inngest serve are not GraphQL:** GitHub/Clerk webhooks and the Inngest serve route are purpose-built integration endpoints with signature verification and idempotency. They do **not** accept GraphQL documents; they emit domain events / invoke handlers that then perform work.
+- **AIR — GraphQL API (/api/graphql)** is the browser-facing API for all dashboard **reads** (queries) and **writes** (mutations). The edge labeled **e.g. create invite** is one representative GraphQL mutation that calls into Clerk via `IdentityPort`; the same surface would cover org/repo settings, RBAC-guarded reads/writes, metering reads, and other dashboard mutations.
 - **GitHub webhook → Inngest (`emit domain event`)** — After a verified `pull_request` (and similar) webhook, **WH** emits a **domain event** to **Inngest** (for example `air/github.pull_request.enqueued` via `JobsPort`). That step is **enqueue only**, not AI work.
 - **Inngest → AIR — Inngest serve (`invoke handler`)** — Inngest’s cloud **calls back** into your Next.js app on **INH** to run the registered function (HTTPS, signing key verified)—this is the same **invoke** leg described under the GitHub PR sequence diagram.
 - **Postgres → INH (`load AI policy + config`)** — While the function runs, **INH** reads Postgres—resolve **`Organization`** from `installation_id`; load **`Repository`** / AI policy (strictness, path excludes, enabled flag); read **dedupe / prior run** rows by delivery or PR identity; optionally load **`OrganizationMember`** for attribution.
