@@ -4,6 +4,10 @@
 
 AIR is a multi-tenant GitHub App with a Next.js web UI and webhook endpoints, a Postgres database (via Prisma), and an async worker pipeline (Inngest) that performs AI review work.
 
+### UI rendering model (SPA-like, hybrid Next.js)
+
+AIR aims for an **SPA-like** dashboard experience (fast client-side navigation and responsive interactions), but is not a “100% client-rendered SPA.” The Next.js App Router implementation is expected to be **hybrid** (server rendering / React Server Components where beneficial, client components where interactivity is needed). The browser still calls **`/api/graphql`** directly for dashboard reads/writes.
+
 The diagram below is a fenced **Mermaid** code block. **GitHub** renders these natively when you view the Markdown file on the website. **Cursor’s** built-in Markdown preview also renders Mermaid, but the engine, default theme, and **click-through for links** can differ from GitHub (relative links in the preview are often inert compared to github.com’s file view).
 
 ```mermaid

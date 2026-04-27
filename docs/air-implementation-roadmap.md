@@ -23,6 +23,7 @@ A phased plan to build AI Reviewer (AIR) from the current Next.js + Prisma skele
 
 - **Clerk usage**: Clerk is used heavily for speed, but stays behind `IdentityPort` so it remains swappable.
 - **Customer admins**: do **not** access the Clerk dashboard; Clerk is internal/transparent to end users.
+- **UI rendering model:** target an **SPA-like** dashboard experience using Next.js App Router in a **hybrid** mode (server rendering / RSC where beneficial, client components where needed), with the browser calling `/api/graphql` for dashboard reads/writes.
 - **Membership onboarding**: **invite-only**; employees join via a **dedicated invite link**.
 - **Membership system of record**: **Clerk Organizations**; AIR mirrors into its DB for authorization, billing, and audit.
 - **Roles/privileges**: AIR defines a **fixed** role list and privilege matrix (SuperUser, CustomerAdmin, TeamLead, Developer). Customers cannot define roles.
