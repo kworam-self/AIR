@@ -75,5 +75,6 @@ Customers cannot define their own roles/privileges. AIR provides exactly:
 
 - Installable GitHub App with a working webhook → async processing pipeline.
 - Invite-only membership, role-gated configuration UI, and visible usage accounting in PR units (with internal token accounting for cost).
+- Dashboard/data APIs implemented via a **GraphQL** endpoint (classic `/api/graphql`) to demonstrate typed schema design and RBAC at the resolver layer.
 - Clear architecture boundaries (`IdentityPort`, `JobsPort`, and metering abstraction) that demonstrate provider-independence.
 

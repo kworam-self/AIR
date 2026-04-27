@@ -10,7 +10,7 @@ A phased plan to build AI Reviewer (AIR) from the current Next.js + Prisma skele
 - **phase-1-clerk** (pending): Wire ClerkProvider, middleware with IdentityPort handshake handling, Clerk webhook → Prisma user/org sync, minimal protected dashboard; support multiple Customer Admins per org and model invite vs active membership for later admin directory
 - **phase-2-github-app** (pending): GitHub App manifest + callback; persist Organization.githubInstallationId; define Clerk↔GitHub org linking model; local webhook tunnel docs
 - **phase-3-webhooks-inngest** (pending): Signed GitHub webhook route; emit air/github.pull_request.enqueued with idempotency; Inngest serve route + handler; optional repo sync from GitHub API
-- **phase-4-rbac** (pending): Central authorization from OrganizationRole + RepositoryScope; guard dashboard/server actions; document superuser vs org roles; treat CustomerAdmin as a repeatable role (multiple per org)
+- **phase-4-rbac** (pending): Central authorization from OrganizationRole + RepositoryScope; guard GraphQL resolvers/mutations and other server entrypoints; document superuser vs org roles; treat CustomerAdmin as a repeatable role (multiple per org)
 - **phase-5-ai** (pending): AiReviewPort + provider; PR context assembly; post review to GitHub; failure/retry policy and minimal repo-level AI settings in schema
 - **phase-6-dashboard** (pending): Org/repo settings UI, PR/review history surfacing, Customer Admin member directory (all org users + invited/active/inactive-style status) and role management aligned with Clerk
 - **phase-7-hardening** (pending): Tests for webhooks/RBAC, CI pipeline, observability and security review (tokens, permissions, logging)
@@ -47,6 +47,7 @@ flowchart LR
     User[Dashboard user]
   end
   subgraph next [Next.js]
+    GQL["/api/graphql"]
     WH["/api/webhooks/github"]
     ID["/api/webhooks/clerk"]
     GHSetup["GitHub App setup routes"]
@@ -66,6 +67,8 @@ flowchart LR
   W -->|post review comments| GH
   User --> UI
   UI -->|Clerk session| next
+  UI -->|GraphQL queries/mutations| GQL
+  GQL --> DB
   ID -->|sync users orgs| DB
   GHSetup -->|manifest exchange| DB
 ```
@@ -89,6 +92,7 @@ flowchart LR
 
 **Goal:** Clerk-backed auth + Clerk Organizations membership with invite-only onboarding, mirrored into AIR DB, while keeping AIR’s role/privilege model fixed and enforced by AIR.
 
+- **Dashboard API shape (GraphQL):** add a classic GraphQL endpoint (e.g. `/api/graphql`) used by the browser for dashboard queries/mutations. Establish the GraphQL context (Clerk session + org selection), resolver patterns, and error formatting early so later phases build on it.
 - **Server-only Clerk admin API use**: customer admins never see Clerk; AIR server calls Clerk APIs.
 - **Multiple Customer Admins**: any **CustomerAdmin** in the org may invite and manage members (subject to the same RBAC rules); do not assume a sole admin when designing flows or UI.
 - Implement **invite-only onboarding**:
@@ -123,8 +127,9 @@ flowchart LR
 **Goal:** Signed `pull_request` webhooks enqueue durable work via [JobsPort](src/lib/jobs/jobs-port.ts).
 
 - Add `POST` handler e.g. [src/app/api/webhooks/github/route.ts](src/app/api/webhooks/github/route.ts): verify `X-Hub-Signature-256` with `GITHUB_WEBHOOK_SECRET`; parse payload; **idempotency** using `X-GitHub-Delivery` as `AirDomainEvent` `id` when emitting `air/github.pull_request.enqueued` (aligns with [domain-events.ts](src/lib/jobs/domain-events.ts)).
-- Extend payload type in `AirDomainEventPayload` as needed (at minimum: installation id, repo full name, PR number, action, and **`X-GitHub-Delivery`** / delivery id for correlation). **Do not** put full diffs or file contents in the event body—workers fetch code from GitHub **in memory** and Postgres stores **minimal** durable state; rationale in [system-architecture.md](system-architecture.md) § *Customer data: webhooks, Postgres, Inngest (DPA-oriented)*.
+- Extend payload type in `AirDomainEventPayload` as needed (at minimum: installation id, repo full name, PR number, action, and `X-GitHub-Delivery` / delivery id for correlation). **Do not** put full diffs or file contents in the event body—workers fetch code from GitHub **in memory** and Postgres stores **minimal** durable state; rationale in [system-architecture.md](system-architecture.md) § *Customer data: webhooks, Postgres, Inngest (DPA-oriented)*.
 - **Inngest serve route** (App Router): `GET/POST/PUT` handler per Inngest Next.js docs, exporting `inngest` client + **functions** array.
+- **Explicit non-GraphQL integration endpoints:** GitHub/Clerk webhooks and the Inngest serve route remain purpose-built HTTP integration endpoints; the dashboard GraphQL endpoint does not replace them.
 - First function: handler for `air/github.pull_request.enqueued` that logs, validates installation belongs to a known `Organization`, and optionally **syncs** [Repository](prisma/schema.prisma) metadata from GitHub API (still no AI).
 - Optional: `air/test.ping` function for smoke tests.
 
@@ -142,7 +147,7 @@ flowchart LR
   - **TEAM_LEAD:** `RepositoryScope.canConfigure` for repos they configure; may view/configure only scoped repos unless you grant org-wide read.
   - **DEVELOPER:** visibility/interaction limited by `RepositoryScope` when present; clarify “optional scopes” vs “all repos if no rows.”
   - **isSuperuser:** platform operations only—guard with explicit checks on admin routes.
-- Apply guards to **dashboard API routes** and future **mutations** (do not rely on UI hiding alone).
+- Apply guards to **GraphQL resolvers/mutations** (dashboard API surface) and any other future server entrypoints (do not rely on UI hiding alone).
 
 **Exit criteria:** Matrix of roles × actions covered by tests or a documented checklist; 403 on forbidden API calls.
 
@@ -176,7 +181,6 @@ High-level arrows on [system architecture](system-architecture.md) compress a lo
 - Resolve **`Organization`** (and GitHub installation mapping) from webhook payload identifiers such as `installation_id`.
 - Load **`Repository`** and **AI policy / config** (enabled flag, strictness, max files/chunking, excluded paths) needed to decide whether and how to review.
 - Read **idempotency / dedupe** state keyed by **`X-GitHub-Delivery`**, PR identity, or a derived run key so Inngest retries do not double-post or double-bill.
-- Optionally read **`OrganizationMember`** (or mirrored role data) when attributing a run to a user or enforcing org-level flags.
 - Read any **quota / limit** rows needed before spending tokens or PR units (if you enforce limits in the worker).
 
 **Writes (examples):**
@@ -208,6 +212,7 @@ Workers continue to use installation auth to **fetch PR context** and to **post*
 
 ## Phase 6 — Dashboard product surface
 
+- **API shape:** dashboard UI uses **GraphQL queries/mutations** (classic `/api/graphql`) for reads and writes; RBAC is enforced in resolver/mutation code paths.
 - **Org home:** installation status, linked Clerk org, repo list with enable/disable AI and “strictness” for team leads/admins.
 - **PR activity:** list recent Inngest runs / review outcomes (data from new tables or denormalized summaries—add `PullRequestReview` or `ReviewRun` model when you outgrow logs-only).
 - **Member management (Customer Admin requirement):** a **directory** of all people in the org: show **AIR role**, identity basics (email/name as available), and a **status** column suitable for operations (for example **invited** for pending Clerk org invitations, **active** for accepted members, **inactive** for removed/suspended—finalize enum vs Clerk states during build). Support **invite/remove** and **role changes** (Clerk vs DB source of truth—prefer Clerk for membership if using Clerk Organizations, and mirror roles into `OrganizationMember` for app-specific TEAM_LEAD/DEV semantics).
